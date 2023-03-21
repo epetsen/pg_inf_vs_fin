@@ -1,0 +1,164 @@
+---
+title: "analysis"
+output: pdf_document
+---
+```{r}
+#upload packages
+library(readxl) # for reading xlsx files
+library(writexl) # for writing xlsx files
+library(ordinal) # for ordinal regression
+library(tidyverse) # for plots and data wrangling
+```
+
+```{r}
+# set default theme
+theme_set(theme_classic() + #set the theme
+            theme(text = element_text(size = 12))) #set the default text size
+```
+
+```{r}
+# replace participants' Prolific Academic ID
+# path to file
+file = "../data/experiment_data_0.xlsx"
+
+# read file
+df = read_excel(file)
+
+# replace participants' Prolific Academic ID
+df = df %>%
+  mutate(participantID = paste("P", as.character(1:n()),
+                               as.character(sample(1:1000,
+                                                nrow(.))),
+                               sep = ""))
+
+# write ``df``to an Excel file
+write_xlsx(df, "../data/experiment_data.xlsx")
+```
+
+```{r}
+# path to file
+file = "../data/experiment_data.xlsx"
+
+#read file
+df.pg = read_excel(file)
+
+# how many unique participants
+length(unique(df.pg$participantID))
+
+# `not in` operator
+`%notin%` = Negate(`%in%`)
+
+# data wrangling (prepare data for analysis)
+df.pg = df.pg %>% 
+  dplyr::select(-contains("practice")) %>%
+  rename(
+    good_ley = good_propuesta,
+    nf_querer = nf_comprar
+    ) %>%
+  gather(item,rating,-participantID) %>%
+  separate(item,c("clause_type","item")) %>% 
+  filter(clause_type %notin% c("bad", "good")) %>%
+  mutate(subordinator = case_when(
+    item %in% c("ropa", "alimentos",
+                "cuadro", "vestido") ~ "para",
+    item %in% c("documento", "fruta",
+                "secretaria", "gala") ~ "a fin de",
+    item %in% c("vecino", "pais", 
+                "libro", "querer") ~ "a pesar de",
+    item %in% c("repetido", "dejado",
+                "jarron", "alfombra") ~ "por",
+    item %in% c("ciudad", "zapatos",
+                "auto", "mesa") ~ "hasta",
+    item %in% c("propuesta", "pastel",
+                "arreglar", "carta") ~ "despues de",
+    item %in% c("casa", "criticar",
+                "exposicion", "pared") ~ "antes de",
+    item %in% c("materia", "deporte",
+                "profesor", "cantante") ~ "relative clause",
+    item %in% c("noticia", "anuncio",
+                "rumor", "empleado") ~ "complex DP"
+  )) %>% 
+  filter(subordinator %notin% c("complex DP", 
+                                "relative clause")) %>%
+  mutate(semantic_relation = case_when(
+    subordinator %in% c("para", "a fin de") ~ "purposive",
+    subordinator %in% c("a pesar de") ~ "concessive",
+    subordinator %in% c("por") ~ "causal",
+    subordinator %in% c("hasta", "despues de",
+                        "antes de") ~ "temporal"
+  )) %>% 
+  filter(!is.na(rating))
+  
+```
+
+```{r}
+# mean rating by clause type
+df.pg %>% 
+  group_by(clause_type) %>% 
+  summarize(mean = mean(rating))
+```
+
+```{r}
+# plot with means by clause type
+df.participants = df.pg %>% 
+  group_by(participantID, clause_type) %>% 
+  summarize(rating = mean(rating, na.rm = T))
+  
+p.mean = df.pg %>% 
+  ggplot(aes(x = reorder(clause_type, rating, na.rm = T),
+             y = rating,
+             fill = clause_type)) +
+  geom_point(data = df.participants,
+             alpha = 0.2,
+            position = position_jitter(width = 0.1, 
+                                       height = 0)) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "linerange",
+               size = 1) +
+  stat_summary(fun = "mean",
+               geom = "point",
+               shape = 21,
+               size = 2) +
+  labs(y = "rating",
+       x = "condition") +
+  scale_x_discrete(labels = c("ind" = "indicative", 
+                              "sbjv" = "subjunctive",
+                              "nf" = "infinitive")) +
+  scale_fill_brewer(palette = "Set1") +
+  
+  theme(legend.position = "none")
+
+ggsave(filename = "pg_mean_plot.pdf",
+       path = "../figures",
+       plot = p.mean,
+       width = 4,
+       height = 3)
+```
+
+```{r}
+# ordinal regression
+# Helmert-code `clause_type`
+df.pg$clause_type_Helm = df.pg$clause_type %>% as.factor()
+contrasts(df.pg$clause_type_Helm) = cbind("sbjv_v_ind" = c(-0.5,0,0.5),"nf_v_fin" = c(-(1/3),(2/3),-(1/3)))
+contrasts(df.pg$clause_type_Helm)
+
+# change class of variables to factor
+df.pg = df.pg %>% 
+  mutate(ord_rating = as.factor(rating)) %>% 
+  mutate_at(.vars = vars(semantic_relation,
+                         item,
+                         participantID),
+            .funs = ~ as.factor(.))
+
+# run ordinal model
+fit = clmm(ord_rating ~ 1 + clause_type_Helm + 
+             (1 + clause_type_Helm|participantID) +
+             (1 + clause_type_Helm|semantic_relation) +
+             (1|item),
+           data = df.pg)
+
+fit %>% summary()
+```
+
+
+
